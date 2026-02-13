@@ -1,0 +1,412 @@
+GROMACS MD SIMULATION WORKFLOW
+Protein–Ligand Complex
+
+============================================================
+
+1. Separating the Protein–Ligand Complex
+   ============================================================
+
+Using ChimeraX:
+
+protein.pdb
+ligand.mol2
+
+---
+
+2. Adding Hydrogens to Ligand
+
+---
+
+Using Avogadro:
+
+ligand.mol2
+
+---
+
+3. Fixing Topology of Ligand File
+
+---
+
+perl sort_mol2_bonds.pl ligand.mol2 ligand_fix.mol2
+
+Then edit ligand_fix.mol2 and change the ligand name:
+
+@<TRIPOS>MOLECULE
+
+---
+
+to
+
+@<TRIPOS>MOLECULE
+JZ41
+
+---
+
+4. CGenFF Ligand Files
+
+---
+
+Download all files from CGenFF (itp, top, pdb, etc).
+
+cp ligand_fix_gmx.top ligand_gmx.itp
+
+Edit ligand_gmx.itp
+(Change many lines as per GROMACS tutorial)
+
+Convert ligand pdb to gro:
+
+gmx editconf -f jz4_ini.pdb -o jz4.gro
+
+---
+
+5. Prepare Protein for GROMACS
+
+---
+
+gmx pdb2gmx -f protein.pdb -o protein.gro -ignh
+
+Selections:
+(1) CHARMM36
+(1) TIP3P
+
+---
+
+6. Prepare Ligand for GROMACS
+
+---
+
+gmx editconf -f jz41.pdb -o ligand.gro
+
+---
+
+7. Create Protein–Ligand Complex
+
+---
+
+Duplicate protein.gro → complex.gro
+
+From ligand.gro:
+Copy contents from 3rd line to second-last line
+
+Paste these lines before the last line of complex.gro
+
+Update atom count in second line of complex.gro
+Example:
+Protein atoms = 100
+Ligand atoms = 20
+Total = 120
+
+---
+
+8. Editing topol.top
+
+---
+
+Open topol.top
+
+After posre.itp #endif, add:
+
+; Include ligand topology
+#include "jz41.itp"
+
+At the very end of the file, add:
+
+JZ41        1
+
+---
+
+9. System Setup (Box, Solvation, Ions)
+
+---
+
+gmx editconf -f complex.gro -o newbox.gro -bt dodecahedron -d 1.0
+
+gmx solvate -cp newbox.gro -cs spc216.gro -p topol.top -o solv.gro
+
+gmx grompp -f ions.mdp -c solv.gro -p topol.top -o ions.tpr
+
+gmx genion -s ions.tpr -o solv_ions.gro -p topol.top -pname NA -nname CL -neutral
+
+ERROR:
+No such moleculetype CL
+
+Reason:
+In CHARMM, ions are named SOD and CLA
+
+Correct command:
+
+gmx genion -s ions.tpr -o solv_ions.gro -p topol.top -pname SOD -nname CLA -neutral
+
+Select:
+15 (SOL)
+
+Open topol.top and delete:
+
+CL                  6
+
+---
+
+10. Energy Minimization
+
+---
+
+gmx grompp -f em.mdp -c solv_ions.gro -p topol.top -o em.tpr
+
+ERROR:
+number of coordinates does not match topology
+
+Fix:
+33509 - 33491 = 18
+18 / 3 = 6
+
+Add 6 to SOL count in topol.top
+
+Run again:
+
+gmx grompp -f em.mdp -c solv_ions.gro -p topol.top -o em.tpr
+
+gmx mdrun -v -deffnm em
+
+---
+
+11. Ligand Position Restraints
+
+---
+
+gmx make_ndx -f jz4.gro -o index_jz4.ndx
+
+Selections:
+
+> 0 & ! a H*
+> q
+
+gmx genrestr -f jz4.gro -n index_jz4.ndx -o posre_jz4.itp -fc 1000 1000 1000
+
+Select:
+3
+
+Edit topol.top and add below ligand .itp:
+
+; Ligand position restraints
+#ifdef POSRES_LIG
+#include "posre_jz4.itp"
+#endif
+
+---
+
+12. Index for Protein–Ligand
+
+---
+
+gmx make_ndx -f em.gro -o index.ndx
+
+Selections:
+
+> 1 | 14
+> q
+
+---
+
+13. NVT Equilibration
+
+---
+
+gmx grompp -f nvt.mdp -c em.gro -r em.gro -p topol.top -o nvt.tpr
+
+gmx mdrun -deffnm nvt
+
+---
+
+14. NPT Equilibration
+
+---
+
+gmx grompp -f npt.mdp -c nvt.gro -t nvt.cpt -r nvt.gro -p topol.top -o npt.tpr
+
+gmx mdrun -deffnm npt
+
+---
+
+15. Production MD (1 ns)
+
+---
+
+gmx grompp -f md.mdp -c npt.gro -t npt.cpt -p topol.top -o md_0_1.tpr
+
+gmx mdrun -deffnm md_0_1
+
+============================================================
+POST MD SIMULATION ANALYSIS
+===========================
+
+---
+
+## Trajectory Centering
+
+gmx make_ndx -f em.gro -n index.ndx
+
+> 1 | 13
+> q
+
+gmx trjconv -s md_0_1.tpr -f md_0_1.xtc -o md_0_1_center.xtc -center -pbc mol -ur compact -n index.ndx
+
+Selections:
+19 (Protein_jz4)
+0 (System)
+
+---
+
+## Trajectory Fitting
+
+gmx trjconv -s md_0_1.tpr -f md_0_1_center.xtc -o md_0_1_fit.xtc -fit rot+trans -n index.ndx
+
+Selections:
+4 (Backbone)
+0 (System)
+
+---
+
+## Extract PDB Frames
+
+0th frame:
+
+gmx trjconv -s md_0_1.tpr -f md_0_1_center.xtc -o start.pdb -dump 0 -n index.ndx
+
+50th frame:
+
+gmx trjconv -s md_0_1.tpr -f md_0_1_center.xtc -o 50thframe.pdb -dump 50 -n index.ndx
+
+---
+
+## H-Bond Identification (from ChimeraX)
+
+Protein:
+GLN 102 OE1
+
+Ligand:
+JZ4 164 O10
+
+Trajectory H-bond distance:
+
+gmx distance -s md_0_1.tpr -f md_0_1_center.xtc -select 'resname "jz4" and name O10 plus resid 102 and name OE1' -oall
+
+---
+
+## Ligand RMSD
+
+gmx make_ndx -f em.gro -n index.ndx
+
+> 13 & ! a H*
+> name 23 JZ4_Heavy
+> q
+
+gmx rms -s em.tpr -f md_0_1_center.xtc -n index.ndx -tu ns -o rmsd_jz4.xvg
+
+Select twice:
+19 (jz4_&_!H*)
+
+With hydrogens:
+
+gmx rms -s em.tpr -f md_0_1_center.xtc -n index.ndx -tu ns -o rmsd_jz4_withH.xvg
+
+Select twice:
+13 (jz4)
+
+Plot:
+
+xmgrace rmsd_jz4.xvg rmsd_jz4_withH.xvg
+
+---
+
+## Protein–Ligand Interaction Energy
+
+gmx grompp -f ie.mdp -c npt.gro -t npt.cpt -p topol.top -n index.ndx -o ie.tpr
+
+gmx mdrun -deffnm ie -rerun md_0_1.xtc -nb cpu
+
+gmx energy -f ie.edr -o interaction_energy.xvg
+
+Select:
+21 Coul-SR:Protein-jz4
+22 LJ-SR:Protein-jz4
+0
+
+Total interaction energy:
+-5.84152 + (-99.2503) = -105.09182 kJ/mol
+
+---
+
+## RMSF
+
+gmx rmsf -s em.tpr -f md_0_1_center.xtc -n index.ndx -o rmsf_jz4.xvg
+
+Select:
+19 (jz4_&_!H*)
+
+---
+
+## Protein RMSD
+
+gmx rms -s em.tpr -f md_0_1_center.xtc -n index.ndx -tu ns -o rmsd_protein.xvg
+
+Select twice:
+4 (Backbone)
+
+---
+
+## Protein + Ligand RMSD
+
+gmx rms -s em.tpr -f md_0_1_center.xtc -n index.ndx -tu ns -o rmsd_ligand.xvg
+
+Select:
+4 (Backbone)
+19 (jz4_&_!H*)
+
+Plot:
+
+xmgrace rmsd_protein.xvg rmsd_ligand.xvg
+
+---
+
+## SASA
+
+gmx sasa -f md_0_1_center.xtc -s md_0_1.tpr -n index.ndx -o sasa_protein.xvg
+
+Select:
+4 (Backbone)
+
+xmgrace sasa_protein.xvg
+
+---
+
+## Radius of Gyration
+
+gmx make_ndx -f md_0_1.tpr -o index.ndx
+
+1 | 13
+name Protein_jz4
+q
+
+gmx gyrate -f md_0_1_center.xtc -s md_0_1.tpr -n index.ndx -o rg.xvg
+
+---
+
+## Hydrogen Bonds
+
+Number:
+
+gmx hbond -f md_0_1_center.xtc -s md_0_1.tpr -n index.ndx -num hbond.xvg
+
+Select:
+13 jz4
+1 Protein
+
+Distance:
+
+gmx hbond -f md_0_1_center.xtc -s md_0_1.tpr -n index.ndx -dist hbond_dist.xvg
+
+Angle:
+
+gmx hbond -f md_0_1_center.xtc -s md_0_1.tpr -n index.ndx -ang hbond_ang.xvg
+
+---

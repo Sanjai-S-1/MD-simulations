@@ -1,0 +1,54 @@
+MMGBSA
+To estimate real-time binding free energy between biomolecules
+
+Environment setup
+
+conda create -n mmgbsa python=3.10 -y
+conda activate mmpbsa
+
+Index file generation
+
+gmx make_ndx -f md_0_1.tpr -o index_mmpbsa.ndx
+
+Inside the make_ndx prompt:
+
+1 | 13
+q
+
+MMGBSA input file preparation
+
+nano mmpbsa.in
+
+Paste the following content into the file:
+
+&general
+sys_name="Protein_jz4",
+startframe=1,
+endframe=9999999,
+interval=1,
+keep_files=0,
+/
+
+&gb
+igb=5,
+saltcon=0.150,
+intdiel=1.0,
+extdiel=78.5,
+/
+
+&decomp
+idecomp=2,
+dec_verbose=0,
+/
+
+Save and exit the file.
+
+Run MMGBSA calculation
+
+mpirun -np 4 gmx_MMPBSA -O
+-i mmpbsa.in
+-cs md_0_1.tpr
+-ci index_mmpbsa.ndx
+-cg 1 13
+-ct md_0_1_center.xtc
+-cp topol.top
